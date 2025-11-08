@@ -3,7 +3,7 @@ import streamlit as st
 # Configurações da página
 st.set_page_config(page_title="Juan viaja seguro por toda España", page_icon="🚖", layout="centered")
 
-st.title("🚖 Cálculo de Corridas - Espanha")
+st.title("🚖 Juan viaja seguro por toda España")
 st.markdown("Partida fixa: **Ibi (Alicante)** 🇪🇸")
 st.divider()
 
