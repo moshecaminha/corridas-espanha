@@ -8,7 +8,7 @@ st.markdown("Partida fixa: **Ibi (Alicante)** 🇪🇸")
 st.divider()
 
 # Custo fixo por km
-custo_km = 0.60
+custo_km = 0.27
 
 # Lista de cidades (pode expandir depois)
 cidades = [
