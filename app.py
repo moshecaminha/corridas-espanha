@@ -9,16 +9,22 @@ from streamlit_folium import st_folium
 import folium
 import plotly.express as px
 
-st.set_page_config(page_title="Corridas Espanha - Usuário/Admin (V2)", page_icon="🚖", layout="wide")
+# ------------------------- CONFIG -------------------------
+st.set_page_config(page_title="Corridas Espanha - V3.1", page_icon="🚖", layout="wide")
 COST_PER_KM = 0.60
-DEFAULT_ORIGIN_NAME = "Ibi, Alicante, Espanha"
 DB_PATH = "rides.db"
 GMAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
 
+# Login simples (fixo)
+USERS = {"admin": "1234", "gestor": "senhaSegura"}
+ADMIN_DISPLAY_NAME = "Juan"  # saudação personalizada
+
+# ------------------------- DB -------------------------
 def init_db():
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS rides (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at TEXT,
@@ -33,17 +39,22 @@ def init_db():
             duration_min REAL,
             price_eur REAL
         )
-    """)
+        """
+    )
     con.commit()
     con.close()
 
 def insert_ride(status, origin, olat, olng, dest, dlat, dlng, distance_km, duration_min, price_eur):
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
-    cur.execute("""
-        INSERT INTO rides (created_at, status, origin, origin_lat, origin_lng, destination, dest_lat, dest_lng, distance_km, duration_min, price_eur)
+    cur.execute(
+        """
+        INSERT INTO rides (created_at, status, origin, origin_lat, origin_lng,
+                           destination, dest_lat, dest_lng, distance_km, duration_min, price_eur)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (datetime.utcnow().isoformat(), status, origin, olat, olng, dest, dlat, dlng, distance_km, duration_min, price_eur))
+        """,
+        (datetime.utcnow().isoformat(), status, origin, olat, olng, dest, dlat, dlng, distance_km, duration_min, price_eur),
+    )
     con.commit()
     con.close()
 
@@ -74,6 +85,7 @@ def fetch_rides(start=None, end=None, status=None):
     con.close()
     return df
 
+# ------------------------- GOOGLE MAPS -------------------------
 def gmaps_geocode(address):
     if not GMAPS_API_KEY:
         return None
@@ -97,7 +109,7 @@ def gmaps_distance_and_duration(origin_latlng, dest_latlng):
             "origins": f"{origin_latlng[0]},{origin_latlng[1]}",
             "destinations": f"{dest_latlng[0]},{dest_latlng[1]}",
             "units": "metric",
-            "key": GMAPS_API_KEY
+            "key": GMAPS_API_KEY,
         }
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
@@ -105,7 +117,7 @@ def gmaps_distance_and_duration(origin_latlng, dest_latlng):
         if rows and rows[0]["elements"][0]["status"] == "OK":
             meters = rows[0]["elements"][0]["distance"]["value"]
             seconds = rows[0]["elements"][0]["duration"]["value"]
-            return meters/1000.0, seconds/60.0
+            return meters / 1000.0, seconds / 60.0
     except Exception:
         pass
     return None, None
@@ -113,21 +125,23 @@ def gmaps_distance_and_duration(origin_latlng, dest_latlng):
 def decode_polyline(polyline_str):
     index, lat, lng, coordinates = 0, 0, 0, []
     while index < len(polyline_str):
+        # lat
         result, shift = 0, 0
         while True:
             b = ord(polyline_str[index]) - 63
             index += 1
-            result |= (b & 0x1f) << shift
+            result |= (b & 0x1F) << shift
             shift += 5
             if b < 0x20:
                 break
         dlat = ~(result >> 1) if (result & 1) else (result >> 1)
         lat += dlat
+        # lng
         result, shift = 0, 0
         while True:
             b = ord(polyline_str[index]) - 63
             index += 1
-            result |= (b & 0x1f) << shift
+            result |= (b & 0x1F) << shift
             shift += 5
             if b < 0x20:
                 break
@@ -145,7 +159,7 @@ def gmaps_directions_polyline(origin_latlng, dest_latlng):
             "origin": f"{origin_latlng[0]},{origin_latlng[1]}",
             "destination": f"{dest_latlng[0]},{dest_latlng[1]}",
             "units": "metric",
-            "key": GMAPS_API_KEY
+            "key": GMAPS_API_KEY,
         }
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
@@ -160,98 +174,134 @@ def gmaps_directions_polyline(origin_latlng, dest_latlng):
         pass
     return None
 
+# ------------------------- USER VIEW -------------------------
 def user_view():
-    st.header("Área do Usuário")
-    st.caption("Digite origem e destino. O sistema consulta o Google Maps e calcula o valor automaticamente (tarifa: € 0,60/km).")
-    c1, c2 = st.columns(2)
-    with c1:
-        origin = st.text_input("Origem", value=DEFAULT_ORIGIN_NAME, placeholder="Ex.: Calle de San Vicente, Alicante")
-    with c2:
-        destination = st.text_input("Destino", placeholder="Ex.: Estación del Norte, Valencia")
+    st.header("🚖 Cálculo de Corrida (Usuário)")
+    st.caption("Digite origem e destino para calcular automaticamente a distância e o valor (€ 0,60/km).")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        origin = st.text_input("Origem")  # sem placeholder
+    with col2:
+        destination = st.text_input("Destino")  # sem placeholder
 
     if st.button("Calcular preço", type="primary"):
         if not GMAPS_API_KEY:
-            st.error("Defina a variável de ambiente GOOGLE_MAPS_API_KEY para habilitar o cálculo automático.")
+            st.error("Defina GOOGLE_MAPS_API_KEY para habilitar o cálculo automático.")
             return
         if not origin.strip() or not destination.strip():
             st.warning("Digite origem e destino.")
             return
+
         orig_coords = gmaps_geocode(origin)
         dest_coords = gmaps_geocode(destination)
         if not orig_coords or not dest_coords:
-            st.error("Não foi possível localizar os endereços. Tente detalhar (número, bairro, cidade).")
+            st.error("Endereços não encontrados. Tente especificar melhor.")
             return
+
         dist_km, dur_min = gmaps_distance_and_duration(orig_coords, dest_coords)
         if dist_km is None:
-            st.error("Falha ao obter distância pelo Google. Verifique sua API key.")
+            st.error("Não foi possível obter a distância/tempo.")
             return
+
         price = round(dist_km * COST_PER_KM, 2)
-        st.success(f"🚗 Distância: **{dist_km:.2f} km** | ⏱ **{dur_min:.0f} min** | 💰 **€ {price:,.2f}**")
+        st.success(f"Distância: {dist_km:.2f} km | Tempo: {dur_min:.0f} min | Valor: € {price:,.2f}")
 
         center = [(orig_coords[0] + dest_coords[0]) / 2, (orig_coords[1] + dest_coords[1]) / 2]
         m = folium.Map(location=center, zoom_start=9)
-        folium.Marker(orig_coords, tooltip="Origem", popup=origin, icon=folium.Icon(color="green")).add_to(m)
-        folium.Marker(dest_coords, tooltip="Destino", popup=destination, icon=folium.Icon(color="red")).add_to(m)
-        poly = gmaps_directions_polyline(orig_coords, dest_coords)
-        if poly:
-            folium.PolyLine(poly, weight=5, opacity=0.85).add_to(m)
-        st_folium(m, height=440, use_container_width=True)
+        folium.Marker(orig_coords, tooltip="Origem", icon=folium.Icon(color="green")).add_to(m)
+        folium.Marker(dest_coords, tooltip="Destino", icon=folium.Icon(color="red")).add_to(m)
+        poly_points = gmaps_directions_polyline(orig_coords, dest_coords)
+        if poly_points:
+            folium.PolyLine(poly_points, weight=5, opacity=0.85).add_to(m)
+        st_folium(m, height=420, use_container_width=True)
 
         if st.button("Solicitar corrida"):
             insert_ride("Pendente", origin, orig_coords[0], orig_coords[1], destination, dest_coords[0], dest_coords[1], float(dist_km), float(dur_min), float(price))
-            st.success("Solicitação enviada ao administrador!")
+            st.success("Solicitação enviada!")
 
+# ------------------------- ADMIN LOGIN -------------------------
+def admin_login():
+    st.header("🔐 Login do Administrador")
+    username = st.text_input("Usuário")
+    password = st.text_input("Senha", type="password")
+    if st.button("Entrar"):
+        if username in USERS and USERS[username] == password:
+            st.session_state["logged_in"] = True
+            st.session_state["user"] = username
+            st.experimental_rerun()
+        else:
+            st.error("Usuário ou senha incorretos.")
+
+# ------------------------- ADMIN VIEW -------------------------
 def admin_view():
-    st.header("Área do Administrador")
-    st.caption("Aceite corridas e visualize métricas por período.")
-    c1, c2, c3 = st.columns(3)
-    with c1:
+    if not st.session_state.get("logged_in"):
+        admin_login()
+        return
+
+    st.header("📊 Painel do Administrador")
+    st.success(f"👋 Bem-vindo ao painel, {ADMIN_DISPLAY_NAME}!")
+
+    # Botão de logout
+    if st.button("Logout"):
+        st.session_state.clear()
+        st.experimental_rerun()
+
+    colf1, colf2, colf3 = st.columns(3)
+    with colf1:
         start_date = st.date_input("Início", value=date.today())
-    with c2:
+    with colf2:
         end_date = st.date_input("Fim", value=date.today())
-    with c3:
+    with colf3:
         status = st.selectbox("Status", ["Todos", "Pendente", "Aceita", "Concluída", "Recusada"])
+
     df = fetch_rides(start=start_date, end=end_date, status=status)
+
     st.subheader("Corridas")
     if df.empty:
-        st.info("Nenhuma corrida encontrada.")
+        st.info("Nenhuma corrida registrada no período/critério selecionado.")
     else:
         for _, row in df.iterrows():
-            with st.expander(f"#{int(row['id'])} | {row['origin']} → {row['destination']} | € {row['price_eur']:.2f} | {row['status']}"):
+            title = f"#{int(row['id'])} | {row['origin']} → {row['destination']} | € {row['price_eur']:.2f} | {row['status']}"
+            with st.expander(title):
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
-                    st.write(f"Distância: **{row['distance_km']:.2f} km**")
-                    st.write(f"Tempo: **{row['duration_min']:.0f} min**")
+                    st.write(f"Distância: {row['distance_km']:.2f} km")
+                    st.write(f"Tempo: {row['duration_min']:.0f} min")
                     st.write(f"Criada: {row['created_at']}")
                 with col2:
-                    if st.button("Aceitar", key=f"acc_{row['id']}"):
+                    if st.button(f"Aceitar #{int(row['id'])}"):
                         update_ride_status(int(row['id']), "Aceita")
                         st.experimental_rerun()
-                    if st.button("Recusar", key=f"rej_{row['id']}"):
+                    if st.button(f"Recusar #{int(row['id'])}"):
                         update_ride_status(int(row['id']), "Recusada")
                         st.experimental_rerun()
                 with col3:
-                    if st.button("Concluir", key=f"done_{row['id']}"):
+                    if st.button(f"Concluir #{int(row['id'])}"):
                         update_ride_status(int(row['id']), "Concluída")
                         st.experimental_rerun()
                 with col4:
                     st.metric("Valor (€)", f"{row['price_eur']:.2f}")
+
         st.subheader("Métricas")
         df["created_day"] = pd.to_datetime(df["created_at"]).dt.date
         agg = df.groupby("created_day").agg(total_eur=("price_eur", "sum"), rides=("id", "count")).reset_index()
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Corridas", int(df.shape[0]))
-        m2.metric("Faturamento (€)", f"{df['price_eur'].sum():,.2f}")
-        m3.metric("Distância total (km)", f"{df['distance_km'].sum():,.1f}")
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Corridas", int(df.shape[0]))
+        c2.metric("Faturamento (€)", f"{df['price_eur'].sum():,.2f}")
+        c3.metric("Distância total (km)", f"{df['distance_km'].sum():,.1f}")
+
         if not agg.empty:
             fig = px.bar(agg, x="created_day", y="total_eur", title="Faturamento por dia (€)")
             st.plotly_chart(fig, use_container_width=True)
 
+# ------------------------- MAIN -------------------------
 def main():
     init_db()
     st.sidebar.title("Menu")
     mode = st.sidebar.radio("Selecione o modo", ["Usuário", "Administrador"])
-    st.sidebar.info("Defina GOOGLE_MAPS_API_KEY nas *secrets* para rotas e distâncias reais.")
+    st.sidebar.info("Defina GOOGLE_MAPS_API_KEY nas secrets para rotas/distância reais.")
     if mode == "Usuário":
         user_view()
     else:
