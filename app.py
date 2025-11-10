@@ -9,52 +9,42 @@ from streamlit_folium import st_folium
 import folium
 import plotly.express as px
 
-# ------------------------- CONFIG -------------------------
-st.set_page_config(page_title="Corridas Espanha - V3.1", page_icon="🚖", layout="wide")
+st.set_page_config(page_title="🚕 Cálculo de Corrida – Espanha (v3.3)", page_icon="🚕", layout="wide")
+
 COST_PER_KM = 0.60
+MIN_PRICE = 5.00
 DB_PATH = "rides.db"
 GMAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
-
-# Login simples (fixo)
 USERS = {"admin": "1234", "gestor": "senhaSegura"}
-ADMIN_DISPLAY_NAME = "Juan"  # saudação personalizada
+ADMIN_DISPLAY_NAME = "Juan"
 
-# ------------------------- DB -------------------------
+# -------------------- BANCO --------------------
 def init_db():
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS rides (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TEXT,
-            status TEXT,
-            origin TEXT,
-            origin_lat REAL,
-            origin_lng REAL,
-            destination TEXT,
-            dest_lat REAL,
-            dest_lng REAL,
-            distance_km REAL,
-            duration_min REAL,
-            price_eur REAL
-        )
-        """
-    )
+    cur.execute("""CREATE TABLE IF NOT EXISTS rides (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT,
+        status TEXT,
+        origin TEXT,
+        origin_lat REAL,
+        origin_lng REAL,
+        destination TEXT,
+        dest_lat REAL,
+        dest_lng REAL,
+        distance_km REAL,
+        duration_min REAL,
+        price_eur REAL
+    )""")
     con.commit()
     con.close()
 
 def insert_ride(status, origin, olat, olng, dest, dlat, dlng, distance_km, duration_min, price_eur):
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
-    cur.execute(
-        """
-        INSERT INTO rides (created_at, status, origin, origin_lat, origin_lng,
-                           destination, dest_lat, dest_lng, distance_km, duration_min, price_eur)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (datetime.utcnow().isoformat(), status, origin, olat, olng, dest, dlat, dlng, distance_km, duration_min, price_eur),
-    )
+    cur.execute("""INSERT INTO rides (created_at, status, origin, origin_lat, origin_lng, destination, dest_lat, dest_lng, distance_km, duration_min, price_eur)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (datetime.utcnow().isoformat(), status, origin, olat, olng, dest, dlat, dlng, distance_km, duration_min, price_eur))
     con.commit()
     con.close()
 
@@ -85,7 +75,7 @@ def fetch_rides(start=None, end=None, status=None):
     con.close()
     return df
 
-# ------------------------- GOOGLE MAPS -------------------------
+# -------------------- GOOGLE --------------------
 def gmaps_geocode(address):
     if not GMAPS_API_KEY:
         return None
@@ -105,12 +95,9 @@ def gmaps_distance_and_duration(origin_latlng, dest_latlng):
         return None, None
     try:
         url = "https://maps.googleapis.com/maps/api/distancematrix/json"
-        params = {
-            "origins": f"{origin_latlng[0]},{origin_latlng[1]}",
-            "destinations": f"{dest_latlng[0]},{dest_latlng[1]}",
-            "units": "metric",
-            "key": GMAPS_API_KEY,
-        }
+        params = {"origins": f"{origin_latlng[0]},{origin_latlng[1]}",
+                  "destinations": f"{dest_latlng[0]},{dest_latlng[1]}",
+                  "units": "metric", "key": GMAPS_API_KEY}
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
         rows = data.get("rows", [])
@@ -125,7 +112,6 @@ def gmaps_distance_and_duration(origin_latlng, dest_latlng):
 def decode_polyline(polyline_str):
     index, lat, lng, coordinates = 0, 0, 0, []
     while index < len(polyline_str):
-        # lat
         result, shift = 0, 0
         while True:
             b = ord(polyline_str[index]) - 63
@@ -136,7 +122,6 @@ def decode_polyline(polyline_str):
                 break
         dlat = ~(result >> 1) if (result & 1) else (result >> 1)
         lat += dlat
-        # lng
         result, shift = 0, 0
         while True:
             b = ord(polyline_str[index]) - 63
@@ -155,12 +140,9 @@ def gmaps_directions_polyline(origin_latlng, dest_latlng):
         return None
     try:
         url = "https://maps.googleapis.com/maps/api/directions/json"
-        params = {
-            "origin": f"{origin_latlng[0]},{origin_latlng[1]}",
-            "destination": f"{dest_latlng[0]},{dest_latlng[1]}",
-            "units": "metric",
-            "key": GMAPS_API_KEY,
-        }
+        params = {"origin": f"{origin_latlng[0]},{origin_latlng[1]}",
+                  "destination": f"{dest_latlng[0]},{dest_latlng[1]}",
+                  "units": "metric", "key": GMAPS_API_KEY}
         r = requests.get(url, params=params, timeout=15)
         data = r.json()
         if data.get("status") == "OK":
@@ -174,18 +156,19 @@ def gmaps_directions_polyline(origin_latlng, dest_latlng):
         pass
     return None
 
-# ------------------------- USER VIEW -------------------------
+# -------------------- USUÁRIO --------------------
 def user_view():
-    st.header("🚖 Cálculo de Corrida (Usuário)")
-    st.caption("Digite origem e destino para calcular automaticamente a distância e o valor (€ 0,60/km).")
+    st.header("🚕 Cálculo de Corrida – Espanha (v3.3)")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        origin = st.text_input("Origem")  # sem placeholder
-    with col2:
-        destination = st.text_input("Destino")  # sem placeholder
+    with st.form("form_corrida"):
+        col1, col2 = st.columns(2)
+        with col1:
+            origin = st.text_input("Origem")
+        with col2:
+            destination = st.text_input("Destino")
+        submit = st.form_submit_button("Calcular preço")
 
-    if st.button("Calcular preço", type="primary"):
+    if submit:
         if not GMAPS_API_KEY:
             st.error("Defina GOOGLE_MAPS_API_KEY para habilitar o cálculo automático.")
             return
@@ -193,34 +176,46 @@ def user_view():
             st.warning("Digite origem e destino.")
             return
 
-        orig_coords = gmaps_geocode(origin)
-        dest_coords = gmaps_geocode(destination)
-        if not orig_coords or not dest_coords:
-            st.error("Endereços não encontrados. Tente especificar melhor.")
-            return
+        with st.spinner("🧭 Calculando rota, aguarde um momento..."):
+            orig_coords = gmaps_geocode(origin)
+            dest_coords = gmaps_geocode(destination)
+            if not orig_coords or not dest_coords:
+                st.error("Endereços não encontrados. Tente especificar melhor.")
+                return
 
-        dist_km, dur_min = gmaps_distance_and_duration(orig_coords, dest_coords)
-        if dist_km is None:
-            st.error("Não foi possível obter a distância/tempo.")
-            return
+            dist_km, dur_min = gmaps_distance_and_duration(orig_coords, dest_coords)
+            if dist_km is None:
+                st.error("Não foi possível obter a distância/tempo.")
+                return
 
-        price = round(dist_km * COST_PER_KM, 2)
-        st.success(f"Distância: {dist_km:.2f} km | Tempo: {dur_min:.0f} min | Valor: € {price:,.2f}")
+            price = max(round(dist_km * COST_PER_KM, 2), MIN_PRICE)
+            poly_points = gmaps_directions_polyline(orig_coords, dest_coords)
 
-        center = [(orig_coords[0] + dest_coords[0]) / 2, (orig_coords[1] + dest_coords[1]) / 2]
-        m = folium.Map(location=center, zoom_start=9)
-        folium.Marker(orig_coords, tooltip="Origem", icon=folium.Icon(color="green")).add_to(m)
-        folium.Marker(dest_coords, tooltip="Destino", icon=folium.Icon(color="red")).add_to(m)
-        poly_points = gmaps_directions_polyline(orig_coords, dest_coords)
-        if poly_points:
-            folium.PolyLine(poly_points, weight=5, opacity=0.85).add_to(m)
+            st.session_state["calc_result"] = {
+                "origin": origin, "destination": destination,
+                "dist_km": dist_km, "dur_min": dur_min, "price": price,
+                "poly_points": poly_points,
+                "orig_coords": orig_coords, "dest_coords": dest_coords,
+            }
+
+    if "calc_result" in st.session_state:
+        res = st.session_state["calc_result"]
+        st.success(f"Distância: {res['dist_km']:.2f} km | Tempo: {res['dur_min']:.0f} min | Valor: € {res['price']:,.2f}")
+        m = folium.Map(location=[(res['orig_coords'][0] + res['dest_coords'][0]) / 2,
+                                 (res['orig_coords'][1] + res['dest_coords'][1]) / 2], zoom_start=9)
+        folium.Marker(res['orig_coords'], tooltip="Origem", icon=folium.Icon(color="green")).add_to(m)
+        folium.Marker(res['dest_coords'], tooltip="Destino", icon=folium.Icon(color="red")).add_to(m)
+        if res['poly_points']:
+            folium.PolyLine(res['poly_points'], weight=5, opacity=0.85).add_to(m)
         st_folium(m, height=420, use_container_width=True)
 
         if st.button("Solicitar corrida"):
-            insert_ride("Pendente", origin, orig_coords[0], orig_coords[1], destination, dest_coords[0], dest_coords[1], float(dist_km), float(dur_min), float(price))
+            insert_ride("Pendente", res['origin'], res['orig_coords'][0], res['orig_coords'][1],
+                        res['destination'], res['dest_coords'][0], res['dest_coords'][1],
+                        float(res['dist_km']), float(res['dur_min']), float(res['price']))
             st.success("Solicitação enviada!")
 
-# ------------------------- ADMIN LOGIN -------------------------
+# -------------------- ADMIN --------------------
 def admin_login():
     st.header("🔐 Login do Administrador")
     username = st.text_input("Usuário")
@@ -233,7 +228,6 @@ def admin_login():
         else:
             st.error("Usuário ou senha incorretos.")
 
-# ------------------------- ADMIN VIEW -------------------------
 def admin_view():
     if not st.session_state.get("logged_in"):
         admin_login()
@@ -242,7 +236,6 @@ def admin_view():
     st.header("📊 Painel do Administrador")
     st.success(f"👋 Bem-vindo ao painel, {ADMIN_DISPLAY_NAME}!")
 
-    # Botão de logout
     if st.button("Logout"):
         st.session_state.clear()
         st.experimental_rerun()
@@ -296,7 +289,7 @@ def admin_view():
             fig = px.bar(agg, x="created_day", y="total_eur", title="Faturamento por dia (€)")
             st.plotly_chart(fig, use_container_width=True)
 
-# ------------------------- MAIN -------------------------
+# -------------------- MAIN --------------------
 def main():
     init_db()
     st.sidebar.title("Menu")
