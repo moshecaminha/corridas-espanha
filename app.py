@@ -2,21 +2,29 @@
 import os
 import sqlite3
 from datetime import datetime, date
+from zoneinfo import ZoneInfo
 import requests
 import pandas as pd
 import streamlit as st
 from streamlit_folium import st_folium
 import folium
 import plotly.express as px
+from urllib.parse import quote_plus
 
-st.set_page_config(page_title="🚕 Cálculo de Corrida – Espanha (v3.3)", page_icon="🚕", layout="wide")
+st.set_page_config(page_title="Juan viaja seguro por toda España", page_icon="🚖", layout="wide")
 
 COST_PER_KM = 0.60
 MIN_PRICE = 5.00
+NIGHT_SURCHARGE = 0.20  # 20%
+NIGHT_START_HOUR = 20   # 20:00
+NIGHT_END_HOUR = 5      # 05:00 (exclusive)
+SPAIN_TZ = ZoneInfo("Europe/Madrid")
+
 DB_PATH = "rides.db"
 GMAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
 USERS = {"admin": "1234", "gestor": "senhaSegura"}
 ADMIN_DISPLAY_NAME = "Juan"
+WHATSAPP_NUMBER_E164 = "5581987593444"  # +55 81 98759-3444
 
 # -------------------- BANCO --------------------
 def init_db():
@@ -36,15 +44,20 @@ def init_db():
         duration_min REAL,
         price_eur REAL
     )""")
+    # --- Migração: adicionar coluna is_night (0/1) se não existir ---
+    cur.execute("PRAGMA table_info(rides)")
+    cols = [row[1] for row in cur.fetchall()]
+    if "is_night" not in cols:
+        cur.execute("ALTER TABLE rides ADD COLUMN is_night INTEGER DEFAULT 0")
     con.commit()
     con.close()
 
-def insert_ride(status, origin, olat, olng, dest, dlat, dlng, distance_km, duration_min, price_eur):
+def insert_ride(status, origin, olat, olng, dest, dlat, dlng, distance_km, duration_min, price_eur, is_night):
     con = sqlite3.connect(DB_PATH)
     cur = con.cursor()
-    cur.execute("""INSERT INTO rides (created_at, status, origin, origin_lat, origin_lng, destination, dest_lat, dest_lng, distance_km, duration_min, price_eur)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (datetime.utcnow().isoformat(), status, origin, olat, olng, dest, dlat, dlng, distance_km, duration_min, price_eur))
+    cur.execute("""INSERT INTO rides (created_at, status, origin, origin_lat, origin_lng, destination, dest_lat, dest_lng, distance_km, duration_min, price_eur, is_night)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (datetime.utcnow().isoformat(), status, origin, olat, olng, dest, dlat, dlng, distance_km, duration_min, price_eur, int(is_night)))
     con.commit()
     con.close()
 
@@ -156,9 +169,24 @@ def gmaps_directions_polyline(origin_latlng, dest_latlng):
         pass
     return None
 
+# -------------------- UTIL --------------------
+def is_night_time(dt_spain: datetime) -> bool:
+    """Retorna True se o horário local na Espanha estiver entre 20:00 e 05:00."""
+    h = dt_spain.hour
+    # Janela cruza a meia-noite: 20-23 ou 0-4
+    return (h >= NIGHT_START_HOUR) or (h < NIGHT_END_HOUR)
+
 # -------------------- USUÁRIO --------------------
 def user_view():
-    st.header("🚕 Cálculo de Corrida – Espanha (v3.3)")
+    # Hero title bar
+    st.markdown("""
+        <div style="background:linear-gradient(90deg,#ffd400,#ff5a5a);
+                    padding:18px;border-radius:14px;margin-bottom:18px;color:#111;
+                    box-shadow:0 4px 18px rgba(0,0,0,0.15);">
+            <h1 style="margin:0;line-height:1.2;">Juan viaja seguro por toda España</h1>
+            <div style="opacity:.8">Calcule o valor da corrida em tempo real • €0,60/km • tarifa mínima €5,00 • +20% noturna (20h–5h)</div>
+        </div>
+    """, unsafe_allow_html=True)
 
     with st.form("form_corrida"):
         col1, col2 = st.columns(2)
@@ -188,32 +216,69 @@ def user_view():
                 st.error("Não foi possível obter a distância/tempo.")
                 return
 
-            price = max(round(dist_km * COST_PER_KM, 2), MIN_PRICE)
+            base_price = max(round(dist_km * COST_PER_KM, 2), MIN_PRICE)
+
+            now_spain = datetime.now(SPAIN_TZ)
+            night = is_night_time(now_spain)
+            final_price = round(base_price * (1.0 + NIGHT_SURCHARGE), 2) if night else base_price
+
             poly_points = gmaps_directions_polyline(orig_coords, dest_coords)
 
             st.session_state["calc_result"] = {
                 "origin": origin, "destination": destination,
-                "dist_km": dist_km, "dur_min": dur_min, "price": price,
+                "dist_km": dist_km, "dur_min": dur_min,
+                "price": final_price, "base_price": base_price,
+                "is_night": night,
                 "poly_points": poly_points,
                 "orig_coords": orig_coords, "dest_coords": dest_coords,
+                "ts_local": now_spain.isoformat()
             }
 
     if "calc_result" in st.session_state:
         res = st.session_state["calc_result"]
+        if res["is_night"]:
+            st.info("💡 Tarifa noturna aplicada (20% a mais)")
         st.success(f"Distância: {res['dist_km']:.2f} km | Tempo: {res['dur_min']:.0f} min | Valor: € {res['price']:,.2f}")
+
+        # --- Botão que SALVA e redireciona para WhatsApp (automático) ---
+        col_btn = st.container()
+        with col_btn:
+            clicked = st.button("📲 SOLICITAR CORRIDA AGORA", key="btn_whatsapp", help="Salvar e abrir WhatsApp")
+        if clicked:
+            insert_ride("Pendente",
+                        res['origin'], res['orig_coords'][0], res['orig_coords'][1],
+                        res['destination'], res['dest_coords'][0], res['dest_coords'][1],
+                        float(res['dist_km']), float(res['dur_min']), float(res['price']),
+                        int(res['is_night']))
+            # WhatsApp message
+            night_tag = "%0A(Tarifa noturna +20%)" if res["is_night"] else ""
+            msg = f"🚕 Solicitação de corrida%0AOrigem: {quote_plus(res['origin'])}%0ADestino: {quote_plus(res['destination'])}%0ADistância: {res['dist_km']:.2f} km%0AValor estimado: € {res['price']:,.2f}{night_tag}"
+            wa_url = f"https://wa.me/{WHATSAPP_NUMBER_E164}?text={msg}"
+            st.success("Solicitação salva! Abrindo WhatsApp...")
+            st.markdown(f'<meta http-equiv="refresh" content="0; url={wa_url}">', unsafe_allow_html=True)
+
+        # Estilo do botão (vibrante)
+        st.markdown("""
+            <style>
+            button[kind="secondary"]#btn_whatsapp, button#btn_whatsapp {
+                background: linear-gradient(90deg,#ff1f1f,#ffd400) !important;
+                color:#111 !important;
+                font-weight:800 !important;
+                border-radius: 12px !important;
+                padding: 0.8rem 1rem !important;
+                box-shadow:0 8px 18px rgba(0,0,0,.20) !important;
+            }
+            </style>
+        """, unsafe_allow_html=True)
+
+        # --- Mapa ---
         m = folium.Map(location=[(res['orig_coords'][0] + res['dest_coords'][0]) / 2,
                                  (res['orig_coords'][1] + res['dest_coords'][1]) / 2], zoom_start=9)
         folium.Marker(res['orig_coords'], tooltip="Origem", icon=folium.Icon(color="green")).add_to(m)
         folium.Marker(res['dest_coords'], tooltip="Destino", icon=folium.Icon(color="red")).add_to(m)
         if res['poly_points']:
             folium.PolyLine(res['poly_points'], weight=5, opacity=0.85).add_to(m)
-        st_folium(m, height=420, use_container_width=True)
-
-        if st.button("Solicitar corrida"):
-            insert_ride("Pendente", res['origin'], res['orig_coords'][0], res['orig_coords'][1],
-                        res['destination'], res['dest_coords'][0], res['dest_coords'][1],
-                        float(res['dist_km']), float(res['dur_min']), float(res['price']))
-            st.success("Solicitação enviada!")
+        st_folium(m, height=430, use_container_width=True)
 
 # -------------------- ADMIN --------------------
 def admin_login():
@@ -261,7 +326,8 @@ def admin_view():
                 with col1:
                     st.write(f"Distância: {row['distance_km']:.2f} km")
                     st.write(f"Tempo: {row['duration_min']:.0f} min")
-                    st.write(f"Criada: {row['created_at']}")
+                    st.write(f"Criada (UTC): {row['created_at']}")
+                    st.write(f"Tarifa noturna: {'Sim' if int(row.get('is_night', 0)) == 1 else 'Não'}")
                 with col2:
                     if st.button(f"Aceitar #{int(row['id'])}"):
                         update_ride_status(int(row['id']), "Aceita")
